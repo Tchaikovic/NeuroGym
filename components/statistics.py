@@ -2,7 +2,7 @@
 Statistics page - displays user learning progress and performance metrics
 """
 import streamlit as st
-from database import get_user_statistics, quizzes_collection
+from database import get_user_statistics, quizzes_collection, get_user_xp, calculate_level
 
 def show_statistics():
     """Display comprehensive learning statistics"""
@@ -12,38 +12,68 @@ def show_statistics():
     # Get statistics data
     stats = get_user_statistics(user_email)
     
+    # Get XP data
+    current_xp = get_user_xp(user_email)
+    current_level = calculate_level(current_xp)
+    
     # Display key metrics in columns
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3, col4, col5 = st.columns(5)
     
     with col1:
-        st.metric("Topics Worked On", stats["topics_count"])
+        st.metric("Level", f"🎯 {current_level}")
     
     with col2:
-        st.metric("Quizzes Taken", stats["quizzes_taken"])
+        st.metric("Total XP", f"⭐ {current_xp}")
     
     with col3:
-        st.metric("Correct Answers", stats["correct_answers"])
+        st.metric("Topics Worked On", stats["topics_count"])
     
     with col4:
-        st.metric("Incorrect Answers", stats["incorrect_answers"])
+        st.metric("Quizzes Taken", stats["quizzes_taken"])
+    
+    with col5:
+        st.metric("Correct Answers", stats["correct_answers"])
     
     # Overall accuracy percentage
     if stats["total_questions"] > 0:
         accuracy = (stats["correct_answers"] / stats["total_questions"]) * 100
-        st.metric("Overall Accuracy", f"{accuracy:.1f}%")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("Overall Accuracy", f"{accuracy:.1f}%")
+        with col2:
+            st.metric("Incorrect Answers", stats["incorrect_answers"])
+    
+    # XP Progress section
+    st.subheader("🚀 XP Progress")
+    xp_current_level = current_xp - ((current_level - 1) * 100)
+    progress = xp_current_level / 100.0
+    st.write(f"**Level {current_level} Progress:** {xp_current_level}/100 XP")
+    st.progress(progress)
+    
+    if current_level > 1:
+        st.info(f"🎉 You've reached Level {current_level}! Keep learning to unlock Level {current_level + 1}!")
+    
+    # XP earning breakdown
+    with st.expander("📊 How to Earn XP"):
+        st.write("**XP Rewards:**")
+        st.write("- 🔑 Daily login: **+5 XP**")
+        st.write("- 📚 New topic: **+15 XP**")
+        st.write("- 📝 Complete quiz: **+10 XP base**")
+        st.write("- ✅ Correct answer: **+5 XP each**")
     
     # Topics breakdown
     if stats["topics_list"]:
         st.subheader("📚 Topics Breakdown")
         for topic_doc in stats["topics_list"]:
             topic_name = topic_doc["topic"]
-            topic_date = topic_doc["date"]
+            # Handle both 'created_date' (preferred) and legacy 'date' field names
+            topic_date = topic_doc.get("created_date") or topic_doc.get("date", "Unknown date")
             
             # Count quizzes for this topic
             topic_quizzes = quizzes_collection.count_documents({"topic": topic_name})
             
             with st.expander(f"📖 {topic_name}"):
-                st.write(f"**Started:** {topic_date[:10]}")
+                st.write(f"**Started:** {topic_date[:10] if topic_date != 'Unknown date' else topic_date}")
                 st.write(f"**Quizzes Created:** {topic_quizzes}")
     
     # Quiz performance breakdown

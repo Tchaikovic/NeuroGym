@@ -2,8 +2,8 @@
 Authentication page - handles login and registration
 """
 import streamlit as st
-from database import authenticate_user, register_user, save_chat_history, serialize_chat_history
-from config import TUTOR_SYSTEM_PROMPT
+from database import authenticate_user, load_chat_history, save_chat_history, register_user
+from config import TUTOR_SYSTEM_PROMPT, get_age_appropriate_guidelines
 
 def show_login_register():
     """Display login and registration tabs"""
@@ -20,10 +20,13 @@ def show_login_register():
             user = authenticate_user(email, password)
             if user:
                 st.session_state.user = user
-                # AI Tutor system prompt
+                # AI Tutor system prompt with age guidelines
+                age = user.get('age', 16)  # Default age if not provided
+                age_guidelines = get_age_appropriate_guidelines(age)
                 system_prompt = TUTOR_SYSTEM_PROMPT.format(
                     name=user.get('name', ''),
-                    age=user.get('age', '')
+                    age=age,
+                    age_guidelines=age_guidelines
                 )
                 
                 # Load or create chat history
@@ -32,12 +35,12 @@ def show_login_register():
                 if existing_history:
                     # Update the first system message if needed
                     if existing_history and existing_history[0]["role"] == "system":
-                        existing_history[0]["content"] = system_prompt
+                        existing_history[0]["message"] = system_prompt
                     else:
-                        existing_history = [{"role": "system", "content": system_prompt}] + existing_history
+                        existing_history = [{"role": "system", "message": system_prompt}] + existing_history
                     st.session_state.chat_history = existing_history
                 else:
-                    st.session_state.chat_history = [{"role": "system", "content": system_prompt}]
+                    st.session_state.chat_history = [{"role": "system", "message": system_prompt}]
                 
                                 # Save updated chat history with personalized prompt
                 save_chat_history(email, st.session_state.chat_history)
@@ -65,20 +68,22 @@ def show_login_register():
             success, result = register_user(email, password, name, age)
             if success:
                 st.session_state.user = result
-                # AI Tutor system prompt
+                # AI Tutor system prompt with age guidelines
+                age_guidelines = get_age_appropriate_guidelines(age)
                 system_prompt = TUTOR_SYSTEM_PROMPT.format(
                     name=name,
-                    age=int(age)
+                    age=int(age),
+                    age_guidelines=age_guidelines
                 )
                 
-                st.session_state.chat_history = [{"role": "system", "content": system_prompt}]
+                st.session_state.chat_history = [{"role": "system", "message": system_prompt}]
                 save_chat_history(email, st.session_state.chat_history)
                 
                 # Add a welcome message from the agent
                 save_chat_history(email, st.session_state.chat_history)
                 
                 # Add a casual welcome message from the agent - no immediate topic request
-                welcome_msg = {"role": "assistant", "content": f"Hi {name}! 👋 Welcome to our tutoring platform. I'm excited to help you learn! How has your day been?"}
+                welcome_msg = {"role": "assistant", "message": f"Hi {name}! 👋 Welcome to our tutoring platform. I'm excited to help you learn! How has your day been?"}
                 st.session_state.chat_history.append(welcome_msg)
                 save_chat_history(email, st.session_state.chat_history)
                 st.success(f"Account created. Welcome, {email}!")

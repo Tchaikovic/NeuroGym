@@ -8,10 +8,56 @@ from database import (
     load_chat_history, save_chat_history, store_topic, 
     get_quiz_by_id, save_quiz_answers, db, get_user_topics, count_user_messages
 )
+from langchain_memory import LangChainChatManager, convert_langchain_to_cohere_format
 from config import COHERE_API_KEY, COHERE_MODEL, TUTOR_SYSTEM_PROMPT
 
 # Cohere setup
 co = cohere.ClientV2(api_key=COHERE_API_KEY)
+
+def extract_text_from_content(content):
+    """Extract text content from various response formats"""
+    if not content:
+        return ""
+    
+    # Handle string content directly
+    if isinstance(content, str):
+        return content
+    
+    # Handle list of content items (v2 API format)
+    if isinstance(content, list):
+        text_parts = []
+        for item in content:
+            if hasattr(item, 'text'):
+                text_parts.append(item.text)
+            elif isinstance(item, dict) and 'text' in item:
+                text_parts.append(item['text'])
+            elif isinstance(item, str):
+                text_parts.append(item)
+        return ' '.join(text_parts)
+    
+    # Handle single content item with text attribute
+    if hasattr(content, 'text'):
+        return content.text
+    
+    # Fallback to string conversion
+    return str(content)
+
+def convert_chat_history_for_api(chat_history):
+    """Convert chat history to proper format for Cohere API v2"""
+    converted_history = []
+    
+    for msg in chat_history:
+        # Get message content from either 'message' or 'content' field
+        content_text = msg.get('message', msg.get('content', ''))
+        
+        if content_text and content_text.strip():
+            converted_msg = {
+                "role": msg["role"],
+                "content": content_text  # Cohere API v2 expects 'content' as string
+            }
+            converted_history.append(converted_msg)
+    
+    return converted_history
 
 # Tool functions
 def create_quiz(title: str, questions: list, difficulty: str = "medium", topic: str = None):
@@ -100,23 +146,98 @@ def create_quiz(title: str, questions: list, difficulty: str = "medium", topic: 
         msg += f" Some questions were skipped due to invalid format: {invalid_questions}"
     return {"is_success": True, "message": msg, "quiz_id": str(result.inserted_id)}
 
-def search_faqs(query):
-    faqs = [
-        {"text": "Reimbursing Travel Expenses: Easily manage your travel expenses by submitting them through our finance tool. Approvals are prompt and straightforward."},
-        {"text": "Working from Abroad: Working remotely from another country is possible. Simply coordinate with your manager and ensure your availability during core hours."}
-    ]
-    return faqs
+def start_new_topic(topic_name: str, user_email: str = None):
+    """Start a new learning topic for the student"""
+    try:
+        # Try to get user email from session state if not provided
+        if not user_email:
+            try:
+                if hasattr(st, 'session_state') and st.session_state.user:
+                    user_email = st.session_state.user["email"]
+            except:
+                pass
+        
+        if user_email and topic_name:
+            # Store the new topic
+            store_topic(user_email, topic_name)
+            return {
+                "is_success": True,
+                "message": f"Great! Let's start learning about {topic_name}. What would you like to know first?",
+                "topic": topic_name
+            }
+        else:
+            return {
+                "is_success": False,
+                "message": "Please provide a topic name to get started."
+            }
+    except Exception as e:
+        return {"is_success": False, "message": "Unable to start new topic", "error": str(e)}
 
-def search_emails(query):
-    emails = [
-        {"from": "it@co1t.com", "to": "david@co1t.com", "date": "2024-06-24", "subject": "Setting Up Your IT Needs", "text": "Greetings! To ensure a seamless start, please refer to the attached comprehensive guide, which will assist you in setting up all your work accounts."},
-        {"from": "john@co1t.com", "to": "david@co1t.com", "date": "2024-06-24", "subject": "First Week Check-In", "text": "Hello! I hope you're settling in well. Let's connect briefly tomorrow to discuss how your first week has been going. Also, make sure to join us for a welcoming lunch this Thursday at noon—it's a great opportunity to get to know your colleagues!"}
-    ]
-    return emails
+def show_quiz_leaderboard(user_email: str = None):
+    """Show quiz performance leaderboard and statistics"""
+    try:
+        # Try to get user email from session state if not provided
+        if not user_email:
+            try:
+                if hasattr(st, 'session_state') and st.session_state.user:
+                    user_email = st.session_state.user["email"]
+            except:
+                pass
+        
+        if user_email:
+            # Get user's quiz performance (this would be implemented based on your quiz results schema)
+            from database import quiz_results_collection
+            user_results = list(quiz_results_collection.find({"user_email": user_email}))
+            
+            if user_results:
+                total_quizzes = len(user_results)
+                avg_score = sum(r.get("score", 0) for r in user_results) / total_quizzes if total_quizzes > 0 else 0
+                
+                return {
+                    "is_success": True,
+                    "message": f"Your quiz performance: {total_quizzes} quizzes completed with an average score of {avg_score:.1f}%",
+                    "total_quizzes": total_quizzes,
+                    "average_score": avg_score
+                }
+            else:
+                return {
+                    "is_success": True,
+                    "message": "You haven't completed any quizzes yet. Would you like me to create a quiz for you?",
+                    "total_quizzes": 0,
+                    "average_score": 0
+                }
+        else:
+            return {"is_success": False, "message": "Unable to access quiz statistics"}
+    except Exception as e:
+        return {"is_success": False, "message": "Unable to retrieve quiz statistics", "error": str(e)}
 
-def create_calendar_event(date: str, time: str, duration: int):
-    return {"is_success": True,
-            "message": f"Created a {duration} hour long event at {time} on {date}"}
+def suggest_topics(user_email: str = None):
+    """Suggest existing topics or prompt for new topic selection"""
+    try:
+        # Try to get user email from session state if not provided
+        if not user_email:
+            try:
+                if hasattr(st, 'session_state') and st.session_state.user:
+                    user_email = st.session_state.user["email"]
+            except:
+                pass
+        
+        if user_email:
+            user_topics = get_user_topics(user_email)
+            if user_topics:
+                return {
+                    "is_success": True,
+                    "message": "Here are some topics you've studied before - you can continue with one of these or start a new topic:",
+                    "existing_topics": user_topics
+                }
+            else:
+                return {
+                    "is_success": True,
+                    "message": "What topic would you like to work on? I can help with any subject you're studying!",
+                    "existing_topics": []
+                }
+    except Exception as e:
+        return {"is_success": False, "message": "Unable to retrieve topics", "error": str(e)}
 
 def suggest_topics(user_email: str = None):
     """Suggest existing topics or prompt for new topic selection"""
@@ -141,7 +262,7 @@ def suggest_topics(user_email: str = None):
     except Exception as e:
         return {"is_success": False, "message": "Unable to retrieve topics", "error": str(e)}
 
-# Tool definitions for Cohere
+# Tool definitions for Cohere - Educational tools only
 tools = [
     {
         "type": "function",
@@ -175,44 +296,15 @@ tools = [
     {
         "type": "function",
         "function": {
-            "name": "search_faqs",
-            "description": "Given a user query, searches a company's frequently asked questions (FAQs) list and returns the most relevant matches to the query.",
+            "name": "start_new_topic",
+            "description": "Start a new learning topic for the student to begin studying",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "The query from the user"}
+                    "topic_name": {"type": "string", "description": "The name of the new topic to start learning"},
+                    "user_email": {"type": "string", "description": "The user's email (optional, will be auto-filled)"}
                 },
-                "required": ["query"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "search_emails",
-            "description": "Given a user query, searches a person's emails and returns the most relevant matches to the query.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string", "description": "The query from the user"}
-                },
-                "required": ["query"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "create_calendar_event",
-            "description": "Creates a new calendar event of the specified duration at the specified time and date. A new event cannot be created on the same time as an existing event.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "date": {"type": "string", "description": "the date on which the event starts, formatted as mm/dd/yy"},
-                    "time": {"type": "string", "description": "the time of the event, formatted using 24h military time formatting"},
-                    "duration": {"type": "number", "description": "the number of hours the event lasts for"}
-                },
-                "required": ["date", "time", "duration"]
+                "required": ["topic_name"]
             }
         }
     },
@@ -226,7 +318,21 @@ tools = [
                 "properties": {
                     "user_email": {"type": "string", "description": "The user's email (optional, will be auto-filled)"}
                 },
-                "required": []
+                "required": ["user_email"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "show_quiz_leaderboard",
+            "description": "Show quiz performance statistics and leaderboard for the student",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "user_email": {"type": "string", "description": "The user's email (optional, will be auto-filled)"}
+                },
+                "required": ["user_email"]
             }
         }
     }
@@ -234,11 +340,10 @@ tools = [
 
 # Map function names to Python functions for tool execution
 functions_map = {
-    "search_faqs": search_faqs,
-    "search_emails": search_emails,
-    "create_calendar_event": create_calendar_event,
     "create_quiz": create_quiz,
-    "suggest_topics": suggest_topics
+    "start_new_topic": start_new_topic,
+    "suggest_topics": suggest_topics,
+    "show_quiz_leaderboard": show_quiz_leaderboard
 }
 
 def render_quiz_inline(msg):
@@ -440,7 +545,8 @@ def show_chat():
                             save_chat_history(st.session_state.user["email"], st.session_state.chat_history)
                             
                             # Get AI response for the topic selection
-                            response = co.chat(model=COHERE_MODEL, messages=st.session_state.chat_history, tools=tools)
+                            api_history = convert_chat_history_for_api(st.session_state.chat_history)
+                            response = co.chat(model=COHERE_MODEL, messages=api_history, tools=tools, strict_tools=True)
                             
                             # Process the AI response
                             if hasattr(response.message, "tool_calls") and response.message.tool_calls:
@@ -487,7 +593,8 @@ def show_chat():
                                 save_chat_history(st.session_state.user["email"], st.session_state.chat_history)
                                 
                                 # Get final assistant response after tool execution
-                                response = co.chat(model=COHERE_MODEL, messages=st.session_state.chat_history, tools=tools)
+                                api_history = convert_chat_history_for_api(st.session_state.chat_history)
+                                response = co.chat(model=COHERE_MODEL, messages=api_history, tools=tools, strict_tools=True)
                                 
                                 # Extract text content properly from final response
                                 final_content = ""
@@ -557,8 +664,24 @@ def show_chat():
         # Save chat history after user message
         save_chat_history(st.session_state.user["email"], st.session_state.chat_history)
         
+        # Determine if tools should be used based on conversation context
+        should_use_tools = len(user_msgs) >= 2 or any(keyword in user_input.lower() for keyword in ["topic", "quiz", "learn", "study", "teach", "explain"])
+        
         # Get AI response
-        response = co.chat(model=COHERE_MODEL, messages=st.session_state.chat_history, tools=tools)
+        api_history = convert_chat_history_for_api(st.session_state.chat_history)
+        
+        try:
+            if should_use_tools:
+                response = co.chat(model=COHERE_MODEL, messages=api_history, tools=tools, strict_tools=True)
+            else:
+                # For casual conversation, don't force tools
+                response = co.chat(model=COHERE_MODEL, messages=api_history, tools=tools)
+        except Exception as e:
+            if "hallucinated" in str(e).lower():
+                # Fallback: retry without strict tools
+                response = co.chat(model=COHERE_MODEL, messages=api_history, tools=tools)
+            else:
+                raise e
 
         # Execute tool calls if any
         if hasattr(response.message, "tool_calls") and response.message.tool_calls:
@@ -607,7 +730,8 @@ def show_chat():
             save_chat_history(st.session_state.user["email"], st.session_state.chat_history)
             
             # Get final assistant response after tool execution
-            response = co.chat(model=COHERE_MODEL, messages=st.session_state.chat_history, tools=tools)
+            api_history = convert_chat_history_for_api(st.session_state.chat_history)
+            response = co.chat(model=COHERE_MODEL, messages=api_history, tools=tools, strict_tools=True)
             
             # Extract text content properly from final response
             final_content = ""

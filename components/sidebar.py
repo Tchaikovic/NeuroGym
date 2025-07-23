@@ -23,16 +23,16 @@ def show_sidebar():
                 st.session_state.user = None
                 st.session_state.show_stats = False
                 st.session_state.chat_history = [
-                    {"role": "system", "content": DEFAULT_SYSTEM_PROMPT}
+                    {"role": "system", "message": DEFAULT_SYSTEM_PROMPT}
                 ]
                 st.rerun()
             
             # Clear chat button
             if st.button("Clear Chat"):
                 # Keep the system prompt but clear the rest
-                system_content = st.session_state.chat_history[0]["content"] if st.session_state.chat_history else ""
+                system_content = st.session_state.chat_history[0]["message"] if st.session_state.chat_history else ""
                 st.session_state.chat_history = [
-                    {"role": "system", "content": system_content}
+                    {"role": "system", "message": system_content}
                 ]
                 save_chat_history(st.session_state.user["email"], st.session_state.chat_history)
                 st.rerun()
