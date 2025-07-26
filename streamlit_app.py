@@ -2,10 +2,10 @@
 Main Streamlit application for AI Tutor platform
 """
 import streamlit as st
-from components.auth import show_login_register
-from components.chat import show_chat
-from components.statistics import show_statistics
-from components.sidebar import show_sidebar
+from src.components.auth import show_login_register
+from src.components.chat import show_chat
+from src.components.statistics import show_statistics
+from src.components.sidebar import show_sidebar
 
 # Page config
 st.set_page_config(

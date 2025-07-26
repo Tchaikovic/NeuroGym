@@ -2,8 +2,8 @@
 Authentication page - handles login and registration
 """
 import streamlit as st
-from database import authenticate_user, load_chat_history, save_chat_history, register_user
-from config import TUTOR_SYSTEM_PROMPT, get_age_appropriate_guidelines
+from ..database import authenticate_user, load_chat_history, save_chat_history, register_user
+from ..config import TUTOR_SYSTEM_PROMPT, get_age_appropriate_guidelines
 
 def show_login_register():
     """Display login and registration tabs"""
@@ -35,12 +35,12 @@ def show_login_register():
                 if existing_history:
                     # Update the first system message if needed
                     if existing_history and existing_history[0]["role"] == "system":
-                        existing_history[0]["message"] = system_prompt
+                        existing_history[0]["content"] = system_prompt
                     else:
-                        existing_history = [{"role": "system", "message": system_prompt}] + existing_history
+                        existing_history = [{"role": "system", "content": system_prompt}] + existing_history
                     st.session_state.chat_history = existing_history
                 else:
-                    st.session_state.chat_history = [{"role": "system", "message": system_prompt}]
+                    st.session_state.chat_history = [{"role": "system", "content": system_prompt}]
                 
                                 # Save updated chat history with personalized prompt
                 save_chat_history(email, st.session_state.chat_history)

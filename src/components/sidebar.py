@@ -2,8 +2,8 @@
 Sidebar component - handles navigation and user information
 """
 import streamlit as st
-from database import save_chat_history, serialize_chat_history
-from config import DEFAULT_SYSTEM_PROMPT
+from ..database import save_chat_history, serialize_chat_history
+from ..config import DEFAULT_SYSTEM_PROMPT
 
 def show_sidebar():
     """Display sidebar with user info and navigation"""

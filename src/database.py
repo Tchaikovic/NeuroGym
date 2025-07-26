@@ -1,30 +1,28 @@
 """
 Database operations for the Cohere Agent application
 """
-import json
 from pymongo import MongoClient
-import streamlit as st
-from config import MONGODB_URI, DATABASE_NAME, COLLECTIONS
+import cohere
+from src.config import MONGODB_URI, DATABASE_NAME, COLLECTIONS, COHERE_API_KEY
 
-# LangChain imports for memory management
-from langchain_memory import (
-    LangChainChatManager, 
-    save_chat_history_langchain, 
-    load_chat_history_langchain,
-    convert_langchain_to_cohere_format
+# Direct MongoDB chat memory management
+from src.chat_memory import (
+    save_chat_history_direct, 
+    load_chat_history_direct
 )
 
 # MongoDB setup
 client = MongoClient(MONGODB_URI)
 db = client[DATABASE_NAME]
 
-# Collections
+# Collections1
 quizzes_collection = db[COLLECTIONS["quizzes"]]
 users_collection = db[COLLECTIONS["users"]]
 chats_collection = db[COLLECTIONS["chats"]]
 answers_collection = db[COLLECTIONS["answers"]]
 topics_collection = db[COLLECTIONS["topics"]]
 password_resets_collection = db[COLLECTIONS["password_resets"]]
+user_topics_collection = db[COLLECTIONS["user_topics"]]
 quiz_results_collection = db["quiz_results"]  # For storing quiz scores and performance
 
 def store_topic(user_email, topic):
@@ -87,23 +85,23 @@ def serialize_chat_history(history):
 
 def get_user_statistics(user_email):
     """Get comprehensive statistics for a user"""
-    # Get topics worked on by checking quizzes taken
+    # Get topics worked on from user_topics collection
+    user_topic_docs = get_user_topics(user_email)
+    topics_count = len(user_topic_docs)
+    
+    # Format topics list with proper date fields
+    topics_list = []
+    for topic_doc in user_topic_docs:
+        topic_info = {
+            "topic": topic_doc.get("topic"),
+            "created_date": topic_doc.get("started_date"),  # Use started_date from user_topics
+            "date": topic_doc.get("started_date")  # Legacy field name for backward compatibility
+        }
+        topics_list.append(topic_info)
+    
+    # Get quiz statistics
     quiz_answers = list(answers_collection.find({"user_email": user_email}))
     quizzes_taken = len(quiz_answers)
-    
-    # Get unique topics from quizzes taken
-    user_topics = set()
-    for answer_doc in quiz_answers:
-        quiz_id = answer_doc["quiz_id"]
-        try:
-            quiz_doc = quizzes_collection.find_one({"_id": __import__('bson').ObjectId(quiz_id)})
-            if quiz_doc and quiz_doc.get("topic"):
-                user_topics.add(quiz_doc["topic"])
-        except:
-            continue
-    
-    topics_count = len(user_topics)
-    topics_list = [{"topic": topic} for topic in user_topics]
     
     # Calculate correct/incorrect answers
     total_questions = 0
@@ -138,12 +136,12 @@ def get_user_statistics(user_email):
     }
 
 def save_chat_history(user_email, chat_history):
-    """Save chat history using LangChain memory management"""
-    save_chat_history_langchain(user_email, chat_history)
+    """Save chat history using direct MongoDB storage"""
+    save_chat_history_direct(user_email, chat_history)
 
 def load_chat_history(user_email):
-    """Load chat history using LangChain memory management"""
-    return load_chat_history_langchain(user_email)
+    """Load chat history using direct MongoDB storage"""
+    return load_chat_history_direct(user_email)
 
 def authenticate_user(email, password):
     """Authenticate user login"""
@@ -197,8 +195,34 @@ def save_quiz_answers(user_email, quiz_id, answers, score=None):
     )
 
 def get_user_topics(user_email=None):
-    """Get all available topics (not user-specific anymore)"""
-    return list(topics_collection.find({}))
+    """Get topics that a specific user has studied from user_topics collection"""
+    if not user_email:
+        # Return all topics if no user specified
+        return list(topics_collection.find({}))
+    
+    # Get user's topics from user_topics collection
+    user_topic_docs = list(user_topics_collection.find({"user_email": user_email}))
+    
+    # Get full topic information for each user topic
+    user_topics = []
+    for user_topic in user_topic_docs:
+        topic_id = user_topic.get('topic_id')
+        if topic_id:
+            try:
+                topic_doc = topics_collection.find_one({"_id": topic_id})
+                if topic_doc:
+                    # Include both topic info and user-topic relationship info
+                    combined_doc = {
+                        "_id": topic_id,
+                        "topic": topic_doc.get("topic"),
+                        "started_date": user_topic.get("started_date"),
+                        "is_active": user_topic.get("is_active", True)
+                    }
+                    user_topics.append(combined_doc)
+            except:
+                continue
+    
+    return user_topics
 
 def get_user_studied_topics(user_email):
     """Get topics that a specific user has actually studied (taken quizzes on)"""
@@ -378,3 +402,133 @@ def send_password_reset_email(email, token):
         
     except Exception as e:
         return False, f"Failed to send email: {str(e)}"
+
+def handle_user_topic_selection(user_email, topic_name):
+    """
+    Handle user topic selection:
+    1. Check if topic exists in global topics collection (using LLM-based similarity)
+    2. If not, create it in topics collection
+    3. Add user-topic relationship to user_topics collection
+    Returns: (topic_id, topic_name, is_new_topic)
+    """
+    import re
+    from bson import ObjectId
+    import datetime
+    
+    def normalize_topic(topic_str):
+        """Normalize topic string for basic cleanup"""
+        if not topic_str:
+            return ""
+        # Basic cleanup: remove extra spaces and normalize case
+        return ' '.join(topic_str.strip().split())
+    
+    def topics_are_similar_llm(new_topic, existing_topic, threshold=0.8):
+        """Check if two topics are similar using LLM semantic understanding"""
+        try:
+            # Initialize Cohere client
+            co = cohere.ClientV2(api_key=COHERE_API_KEY)
+            
+            # Create a prompt for the LLM to determine topic similarity
+            prompt = f"""
+Are these two educational topics referring to the same subject area? Consider semantic meaning, not just exact wording.
+
+Topic 1: "{new_topic}"
+Topic 2: "{existing_topic}"
+
+Examples of similar topics:
+- "Python Programming" and "Programming in Python" (SIMILAR)
+- "JavaScript Basics" and "Introduction to JavaScript" (SIMILAR)
+- "Machine Learning" and "ML Fundamentals" (SIMILAR)
+- "Python Programming" and "Java Programming" (DIFFERENT)
+- "Mathematics" and "History" (DIFFERENT)
+
+Respond with only "SIMILAR" or "DIFFERENT" based on whether these topics cover the same subject area.
+"""
+            
+            response = co.chat(
+                model="command-r-plus",
+                messages=[{"role": "user", "content": prompt}]
+            )
+            
+            # Extract response text
+            response_text = ""
+            if hasattr(response.message, "content"):
+                if isinstance(response.message.content, list):
+                    for item in response.message.content:
+                        if hasattr(item, 'text'):
+                            response_text += item.text
+                        elif isinstance(item, dict) and 'text' in item:
+                            response_text += item['text']
+                        elif isinstance(item, str):
+                            response_text += item
+                else:
+                    if hasattr(response.message.content, 'text'):
+                        response_text = response.message.content.text
+                    else:
+                        response_text = str(response.message.content)
+            
+            # Check if the response indicates similarity
+            response_text = response_text.strip().upper()
+            return "SIMILAR" in response_text
+            
+        except Exception as e:
+            print(f"LLM similarity check failed: {e}")
+            # Fallback to basic string comparison if LLM fails
+            norm1 = normalize_topic(new_topic).lower()
+            norm2 = normalize_topic(existing_topic).lower()
+            return norm1 == norm2 or norm1 in norm2 or norm2 in norm1
+    
+    # Step 1: Check if topic exists in global topics collection (with LLM-based similarity)
+    existing_topics = list(topics_collection.find({}))
+    topic_id = None
+    final_topic_name = topic_name
+    is_new_topic = True
+    
+    # Look for similar topics in the global topics collection using LLM
+    for existing_topic_doc in existing_topics:
+        existing_topic = existing_topic_doc.get('topic', '')
+        if topics_are_similar_llm(topic_name, existing_topic):
+            # Found similar topic, use the existing one
+            topic_id = existing_topic_doc['_id']
+            final_topic_name = existing_topic
+            is_new_topic = False
+            print(f"LLM detected similar topic: '{topic_name}' -> '{existing_topic}'")
+            break
+    
+    # Step 2: If topic doesn't exist, create it in global topics collection
+    if topic_id is None:
+        topic_doc = {
+            "topic": topic_name,
+            "normalized": normalize_topic(topic_name),
+            "created_date": datetime.datetime.now().isoformat()
+        }
+        result = topics_collection.insert_one(topic_doc)
+        topic_id = result.inserted_id
+        final_topic_name = topic_name
+        is_new_topic = True
+        print(f"Created new topic: '{topic_name}'")
+    
+    # Step 3: Add user-topic relationship (if not already exists)
+    user_id = None
+    user_doc = users_collection.find_one({"email": user_email})
+    if user_doc:
+        user_id = user_doc['_id']
+    
+    # Check if user-topic relationship already exists
+    existing_relationship = user_topics_collection.find_one({
+        "user_email": user_email,
+        "topic_id": topic_id
+    })
+    
+    if not existing_relationship:
+        user_topic_doc = {
+            "user_id": user_id,
+            "user_email": user_email,
+            "topic_id": topic_id,
+            "topic_name": final_topic_name,
+            "started_date": datetime.datetime.now().isoformat(),
+            "is_active": True
+        }
+        user_topics_collection.insert_one(user_topic_doc)
+    
+    return str(topic_id), final_topic_name, is_new_topic

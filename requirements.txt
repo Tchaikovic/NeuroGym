@@ -1,6 +1,3 @@
 streamlit
 pymongo
 cohere
-langchain
-langchain-community
-langchain-mongodb

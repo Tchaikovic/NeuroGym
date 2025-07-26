@@ -2,7 +2,7 @@
 Statistics page - displays user learning progress and performance metrics
 """
 import streamlit as st
-from database import get_user_statistics, quizzes_collection, get_user_xp, calculate_level
+from ..database import get_user_statistics, quizzes_collection, get_user_xp, calculate_level
 
 def show_statistics():
     """Display comprehensive learning statistics"""
@@ -66,15 +66,43 @@ def show_statistics():
         st.subheader("📚 Topics Breakdown")
         for topic_doc in stats["topics_list"]:
             topic_name = topic_doc["topic"]
-            # Handle both 'created_date' (preferred) and legacy 'date' field names
-            topic_date = topic_doc.get("created_date") or topic_doc.get("date", "Unknown date")
+            # Use started_date from user_topics collection
+            topic_date = topic_doc.get("created_date") or topic_doc.get("started_date") or topic_doc.get("date", "Unknown date")
             
-            # Count quizzes for this topic
-            topic_quizzes = quizzes_collection.count_documents({"topic": topic_name})
+            # Count quizzes for this specific topic that the user has taken
+            from database import answers_collection, get_quiz_by_id
+            user_quiz_answers = list(answers_collection.find({"user_email": user_email}))
+            topic_quizzes_taken = 0
+            
+            for answer_doc in user_quiz_answers:
+                quiz_id = answer_doc["quiz_id"]
+                quiz_doc = get_quiz_by_id(quiz_id)
+                if quiz_doc and quiz_doc.get("topic") == topic_name:
+                    topic_quizzes_taken += 1
             
             with st.expander(f"📖 {topic_name}"):
-                st.write(f"**Started:** {topic_date[:10] if topic_date != 'Unknown date' else topic_date}")
-                st.write(f"**Quizzes Created:** {topic_quizzes}")
+                col1, col2 = st.columns(2)
+                with col1:
+                    if topic_date != "Unknown date":
+                        # Format date for display
+                        try:
+                            if hasattr(topic_date, 'strftime'):
+                                formatted_date = topic_date.strftime("%Y-%m-%d")
+                            else:
+                                formatted_date = str(topic_date)[:10] if len(str(topic_date)) >= 10 else str(topic_date)
+                            st.write(f"**Started:** {formatted_date}")
+                        except:
+                            st.write(f"**Started:** {topic_date}")
+                    else:
+                        st.write(f"**Started:** {topic_date}")
+                with col2:
+                    st.write(f"**Quizzes Taken:** {topic_quizzes_taken}")
+                
+                # Show additional topic info if available
+                if topic_quizzes_taken > 0:
+                    st.write(f"📊 This topic is part of your active learning journey!")
+                else:
+                    st.write(f"🎯 Ready to take your first quiz on this topic?")
     
     # Quiz performance breakdown
     if stats["quizzes_taken"] > 0:
